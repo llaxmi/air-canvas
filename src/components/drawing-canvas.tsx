@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+
 interface Point {
   x: number;
   y: number;
@@ -17,6 +18,16 @@ export interface DrawingCanvasHandle {
   getStrokes: () => Point[][];
 }
 
+// Canvas context options - static
+const CTX_OPTIONS = { alpha: true, desynchronized: true } as const;
+
+// Drawing styles - static
+const STROKE_COLOR_ACTIVE = "#00ff55";
+const STROKE_COLOR_COMPLETED = "#00d4ff";
+const LINE_WIDTH_ACTIVE = 4;
+const LINE_WIDTH_COMPLETED = 3;
+const MIN_DISTANCE_SQ = 4; // ~2px minimum distance squared
+
 const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
   ({ width, height }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,17 +39,16 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
 
     // Initialize context once
     useEffect(() => {
-      if (canvasRef.current) {
-        ctxRef.current = canvasRef.current.getContext("2d", {
-          alpha: true,
-          desynchronized: true,
-        });
-        if (ctxRef.current) {
-          ctxRef.current.lineCap = "round";
-          ctxRef.current.lineJoin = "round";
-          ctxRef.current.imageSmoothingEnabled = true;
-          ctxRef.current.imageSmoothingQuality = "low"; // Lower quality = faster rendering
-        }
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext("2d", CTX_OPTIONS);
+      if (ctx) {
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "low";
+        ctxRef.current = ctx;
       }
     }, []);
 
@@ -50,64 +60,40 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
       ctx.beginPath();
 
       if (prev) {
-        // Use quadratic curve: start from midpoint of prev->from, control at 'from', end at midpoint of from->to
-        // This creates smooth, continuous curves
-        const startX = (prev.x + from.x) / 2;
-        const startY = (prev.y + from.y) / 2;
-        const endX = (from.x + to.x) / 2;
-        const endY = (from.y + to.y) / 2;
-
-        ctx.moveTo(startX, startY);
-        ctx.quadraticCurveTo(from.x, from.y, endX, endY);
+        // Quadratic curve: midpoint -> control -> midpoint for smooth joins
+        ctx.moveTo((prev.x + from.x) * 0.5, (prev.y + from.y) * 0.5);
+        ctx.quadraticCurveTo(from.x, from.y, (from.x + to.x) * 0.5, (from.y + to.y) * 0.5);
       } else {
-        // First segment - just draw a line
         ctx.moveTo(from.x, from.y);
         ctx.lineTo(to.x, to.y);
       }
 
-      ctx.strokeStyle = "#00ff55";
-      ctx.lineWidth = 4;
+      ctx.strokeStyle = STROKE_COLOR_ACTIVE;
+      ctx.lineWidth = LINE_WIDTH_ACTIVE;
       ctx.stroke();
     };
 
-    // Draw smooth stroke using quadratic curves for continuous smooth paths
-    const drawSmoothStroke = (
-      ctx: CanvasRenderingContext2D,
-      stroke: Point[]
-    ) => {
-      if (stroke.length < 2) return;
+    // Draw smooth stroke using quadratic curves
+    const drawSmoothStroke = (ctx: CanvasRenderingContext2D, stroke: Point[]) => {
+      const len = stroke.length;
+      if (len < 2) return;
 
       ctx.beginPath();
+      ctx.moveTo(stroke[0].x, stroke[0].y);
 
-      if (stroke.length === 2) {
-        // Just two points - draw a line
-        ctx.moveTo(stroke[0].x, stroke[0].y);
+      if (len === 2) {
         ctx.lineTo(stroke[1].x, stroke[1].y);
       } else {
-        // Start from first point
-        ctx.moveTo(stroke[0].x, stroke[0].y);
-
-        // Use quadratic curves: draw from midpoint to midpoint with control point at actual point
-        // This creates smooth, continuous curves
-        for (let i = 0; i < stroke.length - 2; i++) {
+        // Draw quadratic curves through midpoints
+        for (let i = 0; i < len - 2; i++) {
           const next = stroke[i + 1];
           const afterNext = stroke[i + 2];
-
-          // Control point is 'next', end point is midpoint between next and afterNext
-          const endX = (next.x + afterNext.x) / 2;
-          const endY = (next.y + afterNext.y) / 2;
-
-          ctx.quadraticCurveTo(next.x, next.y, endX, endY);
+          ctx.quadraticCurveTo(next.x, next.y, (next.x + afterNext.x) * 0.5, (next.y + afterNext.y) * 0.5);
         }
-
-        // Draw final curve to the last point
-        const lastIndex = stroke.length - 1;
-        ctx.quadraticCurveTo(
-          stroke[lastIndex - 1].x,
-          stroke[lastIndex - 1].y,
-          stroke[lastIndex].x,
-          stroke[lastIndex].y
-        );
+        // Final segment
+        const last = stroke[len - 1];
+        const prev = stroke[len - 2];
+        ctx.quadraticCurveTo(prev.x, prev.y, last.x, last.y);
       }
 
       ctx.stroke();
@@ -119,23 +105,22 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
       if (!ctx) return;
 
       ctx.clearRect(0, 0, width, height);
+      ctx.strokeStyle = STROKE_COLOR_COMPLETED;
+      ctx.lineWidth = LINE_WIDTH_COMPLETED;
 
-      // Draw completed strokes with smooth curves (no shadows for performance)
-      strokesRef.current.forEach((stroke) => {
-        if (stroke.length < 2) return;
-
-        ctx.strokeStyle = "#00d4ff";
-        ctx.lineWidth = 3;
-
-        drawSmoothStroke(ctx, stroke);
-      });
+      const strokes = strokesRef.current;
+      for (let i = 0; i < strokes.length; i++) {
+        if (strokes[i].length >= 2) {
+          drawSmoothStroke(ctx, strokes[i]);
+        }
+      }
     };
 
     useImperativeHandle(ref, () => ({
       addPoint: (point: Point) => {
         const lastPoint = lastPointRef.current;
 
-        // Always add first point
+        // First point of stroke
         if (!lastPoint) {
           currentStrokeRef.current.push(point);
           lastPointRef.current = point;
@@ -143,15 +128,13 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
           return;
         }
 
-        // Skip if too close (reduces data but keeps smoothness)
+        // Skip if too close
         const dx = point.x - lastPoint.x;
         const dy = point.y - lastPoint.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq < 4) return; // ~2px minimum distance
+        if (dx * dx + dy * dy < MIN_DISTANCE_SQ) return;
 
-        // Draw smooth curve immediately
+        // Draw and store
         drawSmoothCurve(previousPointRef.current, lastPoint, point);
-
         currentStrokeRef.current.push(point);
         previousPointRef.current = lastPoint;
         lastPointRef.current = point;
@@ -159,7 +142,7 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
 
       endStroke: () => {
         if (currentStrokeRef.current.length > 1) {
-          strokesRef.current.push([...currentStrokeRef.current]);
+          strokesRef.current.push(currentStrokeRef.current);
         }
         currentStrokeRef.current = [];
         lastPointRef.current = null;
@@ -172,10 +155,7 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
         currentStrokeRef.current = [];
         lastPointRef.current = null;
         previousPointRef.current = null;
-        const ctx = ctxRef.current;
-        if (ctx) {
-          ctx.clearRect(0, 0, width, height);
-        }
+        ctxRef.current?.clearRect(0, 0, width, height);
       },
 
       getStrokes: () => strokesRef.current,

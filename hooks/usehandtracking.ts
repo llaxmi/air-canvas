@@ -1,7 +1,6 @@
 import { Hands, type Results } from "@mediapipe/hands";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Hand tracking hook for MediaPipe integration
 interface Point {
   x: number;
   y: number;
@@ -14,40 +13,76 @@ interface HandTrackingState {
   handDetected: boolean;
 }
 
-// Lightweight smoothing - just enough to remove jitter without adding lag
+// Hand landmark indices
+const FINGERTIPS = [4, 8, 12, 16, 20] as const;
+
+// Hand connections for skeleton drawing - defined once
+const HAND_CONNECTIONS = [
+  // Thumb
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  // Index
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  // Middle
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  // Ring
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  // Pinky
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  // Palm
+  [5, 9], [9, 13], [13, 17],
+] as const;
+
+// Canvas context options
+const CTX_OPTIONS = { alpha: true, desynchronized: true } as const;
+
+// Video constraints
+const VIDEO_CONSTRAINTS = {
+  width: { ideal: 480, max: 640 },
+  height: { ideal: 360, max: 480 },
+  facingMode: "user",
+  frameRate: { ideal: 30, max: 30 },
+} as const;
+
+// MediaPipe options
+const HANDS_OPTIONS = {
+  maxNumHands: 1,
+  modelComplexity: 0,
+  minDetectionConfidence: 0.4,
+  minTrackingConfidence: 0.4,
+} as const;
+
+// Lightweight exponential smoothing
 class LightSmoother {
-  private lastPoint: Point | null = null;
+  private lastX = 0;
+  private lastY = 0;
+  private hasLast = false;
   private readonly factor: number;
 
   constructor(factor = 0.6) {
-    // Higher factor = more responsive, lower = smoother
     this.factor = factor;
   }
 
-  smooth(point: Point): Point {
-    if (!this.lastPoint) {
-      this.lastPoint = { ...point };
-      return point;
+  smooth(x: number, y: number): Point {
+    if (!this.hasLast) {
+      this.lastX = x;
+      this.lastY = y;
+      this.hasLast = true;
+      return { x, y };
     }
 
-    // Simple exponential smoothing - very fast
-    const smoothed = {
-      x: this.lastPoint.x + (point.x - this.lastPoint.x) * this.factor,
-      y: this.lastPoint.y + (point.y - this.lastPoint.y) * this.factor,
-    };
-
-    this.lastPoint = smoothed;
-    return smoothed;
+    this.lastX += (x - this.lastX) * this.factor;
+    this.lastY += (y - this.lastY) * this.factor;
+    return { x: this.lastX, y: this.lastY };
   }
 
   reset() {
-    this.lastPoint = null;
+    this.hasLast = false;
   }
 }
 
 export const useHandTracking = (
-  videoRef: React.RefObject<HTMLVideoElement>,
-  canvasRef: React.RefObject<HTMLCanvasElement>,
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
   onDrawingPoint: (point: Point) => void,
   onDrawingEnd: () => void
 ) => {
@@ -59,54 +94,42 @@ export const useHandTracking = (
   });
 
   const handsRef = useRef<Hands | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
+  const animationFrameRef = useRef<number>(0);
   const prevDrawingState = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
-  const pointSmootherRef = useRef(new LightSmoother(0.8)); // 0.85 = more responsive, less smoothing = faster
+  const pointSmootherRef = useRef(new LightSmoother(0.8));
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  // Use refs to avoid stale closures
+  // Stable callback refs
   const onDrawingPointRef = useRef(onDrawingPoint);
   const onDrawingEndRef = useRef(onDrawingEnd);
+  onDrawingPointRef.current = onDrawingPoint;
+  onDrawingEndRef.current = onDrawingEnd;
 
-  useEffect(() => {
-    onDrawingPointRef.current = onDrawingPoint;
-    onDrawingEndRef.current = onDrawingEnd;
-  }, [onDrawingPoint, onDrawingEnd]);
-
-  const isFingerExtended = useCallback(
-    (landmarks: any[], tipIdx: number, pipIdx: number, mcpIdx: number) => {
-      return (
-        landmarks[tipIdx].y < landmarks[pipIdx].y &&
-        landmarks[pipIdx].y < landmarks[mcpIdx].y
-      );
-    },
-    []
-  );
-
-  // Cache canvas context
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  // Check if finger is extended (tip above PIP above MCP)
+  const isFingerExtended = (landmarks: Results["multiHandLandmarks"][0], tipIdx: number, pipIdx: number, mcpIdx: number) =>
+    landmarks[tipIdx].y < landmarks[pipIdx].y && landmarks[pipIdx].y < landmarks[mcpIdx].y;
 
   const processResults = useCallback(
     (results: Results) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
-      // Cache context for better performance
-      if (!ctxRef.current) {
-        ctxRef.current = canvas.getContext("2d", {
-          alpha: true,
-          desynchronized: true,
-        });
+      // Get or cache context
+      let ctx = ctxRef.current;
+      if (!ctx) {
+        ctx = canvas.getContext("2d", CTX_OPTIONS);
+        if (!ctx) return;
+        ctxRef.current = ctx;
       }
-      const ctx = ctxRef.current;
-      if (!ctx) return;
 
+      // Handle canvas resize
       if (canvas.width === 0 || canvas.height === 0) {
         const video = videoRef.current;
-        if (video && video.videoWidth > 0 && video.videoHeight > 0) {
+        if (video && video.videoWidth > 0) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
-          ctxRef.current = null; // Reset context when canvas resizes
+          ctxRef.current = null;
         }
         return;
       }
@@ -114,129 +137,81 @@ export const useHandTracking = (
       const w = canvas.width;
       const h = canvas.height;
 
-      // Clear with a single operation
       ctx.clearRect(0, 0, w, h);
 
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
-
-        const indexExtended = isFingerExtended(landmarks, 8, 6, 5);
-        const middleExtended = isFingerExtended(landmarks, 12, 10, 9);
-        const ringExtended = isFingerExtended(landmarks, 16, 14, 13);
-        const pinkyExtended = isFingerExtended(landmarks, 20, 18, 17);
-
+      const handLandmarks = results.multiHandLandmarks?.[0];
+      
+      if (handLandmarks) {
+        // Detect drawing gesture: only index finger extended
         const isDrawingNow =
-          indexExtended && !middleExtended && !ringExtended && !pinkyExtended;
+          isFingerExtended(handLandmarks, 8, 6, 5) &&
+          !isFingerExtended(handLandmarks, 12, 10, 9) &&
+          !isFingerExtended(handLandmarks, 16, 14, 13) &&
+          !isFingerExtended(handLandmarks, 20, 18, 17);
 
-        // Raw point from hand tracking
-        const rawPoint: Point = {
-          x: landmarks[8].x * w,
-          y: landmarks[8].y * h,
-        };
+        // Smooth the index fingertip position
+        const point = pointSmootherRef.current.smooth(
+          handLandmarks[8].x * w,
+          handLandmarks[8].y * h
+        );
 
-        // Lightweight smoothing - responsive with minimal jitter
-        const point = pointSmootherRef.current.smooth(rawPoint);
-
-        // Draw full hand skeleton with all fingers
-        // Hand connections - each finger and palm
-        const connections = [
-          // Thumb
-          [0, 1],
-          [1, 2],
-          [2, 3],
-          [3, 4],
-          // Index finger
-          [0, 5],
-          [5, 6],
-          [6, 7],
-          [7, 8],
-          // Middle finger
-          [0, 9],
-          [9, 10],
-          [10, 11],
-          [11, 12],
-          // Ring finger
-          [0, 13],
-          [13, 14],
-          [14, 15],
-          [15, 16],
-          // Pinky
-          [0, 17],
-          [17, 18],
-          [18, 19],
-          [19, 20],
-          // Palm connections
-          [5, 9],
-          [9, 13],
-          [13, 17],
-        ];
-
-        // Draw skeleton lines for full hand
+        // Draw skeleton - batch all lines in one path
         ctx.strokeStyle = "rgba(30, 58, 138, 0.8)";
         ctx.lineWidth = 2;
         ctx.lineCap = "round";
-
         ctx.beginPath();
-        for (const [start, end] of connections) {
-          ctx.moveTo(landmarks[start].x * w, landmarks[start].y * h);
-          ctx.lineTo(landmarks[end].x * w, landmarks[end].y * h);
+        
+        for (let i = 0; i < HAND_CONNECTIONS.length; i++) {
+          const [start, end] = HAND_CONNECTIONS[i];
+          ctx.moveTo(handLandmarks[start].x * w, handLandmarks[start].y * h);
+          ctx.lineTo(handLandmarks[end].x * w, handLandmarks[end].y * h);
         }
         ctx.stroke();
 
-        // Draw all joints as small circles
+        // Draw joints - batch all circles
         ctx.fillStyle = "rgba(30, 64, 175, 0.9)";
+        ctx.beginPath();
         for (let i = 0; i < 21; i++) {
-          ctx.beginPath();
-          ctx.arc(landmarks[i].x * w, landmarks[i].y * h, 4, 0, 2 * Math.PI);
-          ctx.fill();
+          const lm = handLandmarks[i];
+          ctx.moveTo(lm.x * w + 4, lm.y * h);
+          ctx.arc(lm.x * w, lm.y * h, 4, 0, Math.PI * 2);
         }
+        ctx.fill();
 
-        // Highlight fingertips with larger circles
-        const fingertips = [4, 8, 12, 16, 20];
-        for (const tip of fingertips) {
-          ctx.beginPath();
-          ctx.arc(
-            landmarks[tip].x * w,
-            landmarks[tip].y * h,
-            6,
-            0,
-            2 * Math.PI
-          );
+        // Draw fingertips with highlights
+        for (let i = 0; i < FINGERTIPS.length; i++) {
+          const tip = FINGERTIPS[i];
+          const lm = handLandmarks[tip];
           ctx.fillStyle = tip === 8 && isDrawingNow ? "#00ff66" : "#1e40af";
+          ctx.beginPath();
+          ctx.arc(lm.x * w, lm.y * h, 6, 0, Math.PI * 2);
           ctx.fill();
         }
 
-        // Special highlight for index finger when drawing and call drawing callback
+        // Drawing mode indicator and callback
         if (isDrawingNow) {
-          const tipX = landmarks[8].x * w;
-          const tipY = landmarks[8].y * h;
-
+          const tipX = handLandmarks[8].x * w;
+          const tipY = handLandmarks[8].y * h;
           ctx.beginPath();
-          ctx.arc(tipX, tipY, 14, 0, 2 * Math.PI);
+          ctx.arc(tipX, tipY, 14, 0, Math.PI * 2);
           ctx.strokeStyle = "rgba(30, 64, 175, 0.6)";
           ctx.lineWidth = 3;
           ctx.stroke();
 
           onDrawingPointRef.current(point);
-        } else if (prevDrawingState.current && !isDrawingNow) {
+        } else if (prevDrawingState.current) {
           pointSmootherRef.current.reset();
           onDrawingEndRef.current();
         }
 
         prevDrawingState.current = isDrawingNow;
 
-        // Only update state when values actually change to prevent re-renders
-        setState((prev) => {
-          if (prev.isDrawing !== isDrawingNow || !prev.handDetected) {
-            return {
-              isTracking: true,
-              indexFingerTip: point,
-              isDrawing: isDrawingNow,
-              handDetected: true,
-            };
-          }
-          return prev;
-        });
+        // Update state only when changed
+        setState((prev) => 
+          prev.isDrawing !== isDrawingNow || !prev.handDetected
+            ? { isTracking: true, indexFingerTip: point, isDrawing: isDrawingNow, handDetected: true }
+            : prev
+        );
       } else {
         if (prevDrawingState.current) {
           pointSmootherRef.current.reset();
@@ -244,21 +219,14 @@ export const useHandTracking = (
           prevDrawingState.current = false;
         }
 
-        // Only update state when values actually change
-        setState((prev) => {
-          if (prev.handDetected || prev.isDrawing) {
-            return {
-              isTracking: true,
-              indexFingerTip: null,
-              isDrawing: false,
-              handDetected: false,
-            };
-          }
-          return prev;
-        });
+        setState((prev) =>
+          prev.handDetected || prev.isDrawing
+            ? { isTracking: true, indexFingerTip: null, isDrawing: false, handDetected: false }
+            : prev
+        );
       }
     },
-    [canvasRef, videoRef, isFingerExtended]
+    [canvasRef, videoRef]
   );
 
   const startTracking = useCallback(async () => {
@@ -266,46 +234,31 @@ export const useHandTracking = (
     if (!video) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 480, max: 640 }, // Lower resolution = much faster processing
-          height: { ideal: 360, max: 480 },
-          facingMode: "user",
-          frameRate: { ideal: 30, max: 30 }, // 30fps is sufficient and much faster
-        },
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO_CONSTRAINTS });
       streamRef.current = stream;
       video.srcObject = stream;
       await video.play();
 
       const hands = new Hands({
-        locateFile: (file) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
 
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 0, // Use lite model for better performance
-        minDetectionConfidence: 0.4, // Lower = faster tracking
-        minTrackingConfidence: 0.4,
-      });
-
+      hands.setOptions(HANDS_OPTIONS);
       hands.onResults(processResults);
       handsRef.current = hands;
 
       setState((prev) => ({ ...prev, isTracking: true }));
 
-      // Run as fast as MediaPipe can handle - no artificial throttling
+      // Process frames without throttling
       let isProcessing = false;
 
       const processFrame = async () => {
-        // Prevent overlapping calls but don't throttle
         if (!isProcessing && handsRef.current && video.readyState >= 2) {
           isProcessing = true;
           try {
             await handsRef.current.send({ image: video });
-          } catch (e) {
-            // Ignore send errors during cleanup
+          } catch {
+            // Ignore errors during cleanup
           }
           isProcessing = false;
         }

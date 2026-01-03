@@ -1,6 +1,6 @@
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
-import React, { memo, useMemo, useRef } from "react";
+import { memo, useMemo, useRef } from "react";
 import * as THREE from "three";
 
 interface Point {
@@ -8,60 +8,59 @@ interface Point {
   y: number;
 }
 
-// Chaikin's algorithm for smooth curves
-function chaikinSmooth(
-  points: { x: number; y: number }[],
-  iterations: number = 2
-): { x: number; y: number }[] {
+// Chaikin's algorithm for smooth curves - optimized with pre-allocated arrays
+const chaikinSmooth = (points: Point[], iterations = 2): Point[] => {
   if (points.length < 3) return points;
 
-  let result = [...points];
+  let result = points;
 
   for (let iter = 0; iter < iterations; iter++) {
-    const smoothed: { x: number; y: number }[] = [];
-    smoothed.push(result[0]); // Keep first point
+    const len = result.length;
+    // Pre-calculate size: first + (pairs * 2) + last
+    const smoothed = new Array<Point>(1 + (len - 1) * 2 + 1);
+    let idx = 0;
 
-    for (let i = 0; i < result.length - 1; i++) {
+    smoothed[idx++] = result[0]; // Keep first point
+
+    for (let i = 0; i < len - 1; i++) {
       const p0 = result[i];
       const p1 = result[i + 1];
-
-      // Q = 3/4 * P0 + 1/4 * P1
-      smoothed.push({
+      smoothed[idx++] = {
         x: 0.75 * p0.x + 0.25 * p1.x,
         y: 0.75 * p0.y + 0.25 * p1.y,
-      });
-
-      // R = 1/4 * P0 + 3/4 * P1
-      smoothed.push({
+      };
+      smoothed[idx++] = {
         x: 0.25 * p0.x + 0.75 * p1.x,
         y: 0.25 * p0.y + 0.75 * p1.y,
-      });
+      };
     }
 
-    smoothed.push(result[result.length - 1]); // Keep last point
+    smoothed[idx] = result[len - 1]; // Keep last point
     result = smoothed;
   }
 
   return result;
-}
+};
 
-// Downsample points while preserving shape
-function downsample(
-  points: { x: number; y: number }[],
-  targetCount: number
-): { x: number; y: number }[] {
-  if (points.length <= targetCount) return points;
+// Downsample points while preserving shape - optimized
+const downsample = (points: Point[], targetCount: number): Point[] => {
+  const len = points.length;
+  if (len <= targetCount) return points;
 
-  const step = (points.length - 1) / (targetCount - 1);
-  const result: { x: number; y: number }[] = [];
+  const step = (len - 1) / (targetCount - 1);
+  const result = new Array<Point>(targetCount);
 
   for (let i = 0; i < targetCount; i++) {
-    const idx = Math.round(i * step);
-    result.push(points[Math.min(idx, points.length - 1)]);
+    result[i] = points[Math.min(Math.round(i * step), len - 1)];
   }
 
   return result;
-}
+};
+
+// Color palette - computed once
+const HUES = [186, 210, 280, 330, 45, 150] as const;
+const TUBE_RADIUS = 0.12;
+const RADIAL_SEGMENTS = 12;
 
 interface ClayTubeProps {
   stroke: Point[];
@@ -70,82 +69,89 @@ interface ClayTubeProps {
   canvasHeight: number;
 }
 
-const ClayTube: React.FC<ClayTubeProps> = memo(
+const ClayTube = memo<ClayTubeProps>(
   ({ stroke, index, canvasWidth, canvasHeight }) => {
     const meshRef = useRef<THREE.Mesh>(null);
-    const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+
+    // Pre-compute scale factors
+    const scaleX = 5 / canvasWidth;
+    const scaleY = 4 / canvasHeight;
+    const zOffset = index * 0.5;
 
     const geometry = useMemo(() => {
       if (stroke.length < 3) return null;
 
-      // Normalize and center the points
-      const normalizedPoints = stroke.map((p) => ({
-        x: (p.x / canvasWidth - 0.5) * 5,
-        y: -(p.y / canvasHeight - 0.5) * 4,
-      }));
+      // Normalize, center, and downsample in one pass
+      const maxPoints = Math.min(stroke.length, 30);
+      const step =
+        stroke.length > maxPoints ? (stroke.length - 1) / (maxPoints - 1) : 1;
+      const normalizedPoints: Point[] = [];
 
-      // Downsample first to reduce computation
-      const downsampled = downsample(
-        normalizedPoints,
-        Math.min(normalizedPoints.length, 30)
-      );
+      for (let i = 0; i < maxPoints; i++) {
+        const p = stroke[Math.min(Math.round(i * step), stroke.length - 1)];
+        normalizedPoints.push({
+          x: p.x * scaleX - 2.5,
+          y: -(p.y * scaleY - 2),
+        });
+      }
 
-      // Apply Chaikin smoothing for soft curves
-      const smoothedPoints = chaikinSmooth(downsampled, 3);
+      // Apply Chaikin smoothing
+      const smoothedPoints = chaikinSmooth(normalizedPoints, 3);
 
       // Create 3D curve points with subtle Z variation
-      const curve3DPoints = smoothedPoints.map((p, i) => {
-        const z = Math.sin(i * 0.15) * 0.15 + index * 0.5;
-        return new THREE.Vector3(p.x, p.y, z);
-      });
+      const curve3DPoints = smoothedPoints.map(
+        (p, i) =>
+          new THREE.Vector3(p.x, p.y, Math.sin(i * 0.15) * 0.15 + zOffset)
+      );
 
       if (curve3DPoints.length < 2) return null;
 
-      // Create smooth Catmull-Rom curve
       const curve = new THREE.CatmullRomCurve3(
         curve3DPoints,
         false,
         "catmullrom",
         0.5
       );
-
-      // Create tube with optimized segments
       const tubularSegments = Math.min(curve3DPoints.length * 3, 64);
-      const radialSegments = 12;
-      const radius = 0.12;
 
       return new THREE.TubeGeometry(
         curve,
         tubularSegments,
-        radius,
-        radialSegments,
+        TUBE_RADIUS,
+        RADIAL_SEGMENTS,
         false
       );
-    }, [stroke, canvasWidth, canvasHeight, index]);
+    }, [stroke, scaleX, scaleY, zOffset]);
 
-    // Gentle floating animation
-    useFrame((state) => {
-      if (meshRef.current) {
-        const time = state.clock.elapsedTime;
-        meshRef.current.position.y = Math.sin(time * 0.3 + index * 0.7) * 0.05;
-        meshRef.current.rotation.z = Math.sin(time * 0.2 + index) * 0.02;
+    // Gentle floating animation - only update when mesh exists
+    useFrame(({ clock }) => {
+      const mesh = meshRef.current;
+      if (mesh) {
+        const t = clock.elapsedTime;
+        mesh.position.y = Math.sin(t * 0.3 + index * 0.7) * 0.05;
+        mesh.rotation.z = Math.sin(t * 0.2 + index) * 0.02;
       }
     });
 
-    if (!geometry) return null;
+    // Memoize color values
+    const hue = HUES[index % HUES.length];
+    const colors = useMemo(
+      () => ({
+        main: `hsl(${hue}, 55%, 55%)`,
+        emissive: `hsl(${hue}, 70%, 20%)`,
+      }),
+      [hue]
+    );
 
-    // Generate pleasing clay-like colors
-    const hues = [186, 210, 280, 330, 45, 150];
-    const hue = hues[index % hues.length];
+    if (!geometry) return null;
 
     return (
       <mesh ref={meshRef} geometry={geometry} position={[0, 0, index * 0.3]}>
         <meshStandardMaterial
-          ref={materialRef}
-          color={`hsl(${hue}, 55%, 55%)`}
+          color={colors.main}
           metalness={0.05}
           roughness={0.85}
-          emissive={`hsl(${hue}, 70%, 20%)`}
+          emissive={colors.emissive}
           emissiveIntensity={0.1}
         />
       </mesh>
@@ -161,23 +167,24 @@ interface ThreeSceneProps {
   canvasHeight: number;
 }
 
-const ThreeScene: React.FC<ThreeSceneProps> = memo(
+// GL config - static, defined once
+const GL_CONFIG = {
+  alpha: true,
+  antialias: true,
+  powerPreference: "high-performance" as const,
+  stencil: false,
+  depth: true,
+};
+
+const ThreeScene = memo<ThreeSceneProps>(
   ({ strokes, canvasWidth, canvasHeight }) => {
     return (
       <div className="w-full h-full rounded-xl overflow-hidden">
         <Canvas
-          gl={{
-            alpha: true,
-            antialias: true,
-            powerPreference: "high-performance",
-            stencil: false,
-            depth: true,
-          }}
+          gl={GL_CONFIG}
           frameloop="always"
-          dpr={[1, 1.5]} // Limit pixel ratio for performance
-          onCreated={({ gl }) => {
-            gl.setClearColor("#000000", 0);
-          }}
+          dpr={[1, 1.5]}
+          onCreated={({ gl }) => gl.setClearColor(0x000000, 0)}
         >
           <PerspectiveCamera makeDefault position={[0, 0, 6]} fov={50} />
           <OrbitControls
@@ -196,7 +203,7 @@ const ThreeScene: React.FC<ThreeSceneProps> = memo(
 
           {strokes.map((stroke, index) => (
             <ClayTube
-              key={`stroke-${index}-${stroke.length}`}
+              key={index}
               stroke={stroke}
               index={index}
               canvasWidth={canvasWidth}

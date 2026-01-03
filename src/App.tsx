@@ -6,79 +6,85 @@ import DrawingCanvas, {
 } from "./components/drawing-canvas";
 import ThreeScene from "./components/three-scene";
 
+interface Point {
+  x: number;
+  y: number;
+}
+
 function App() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<DrawingCanvasHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [canvasSize, setCanvasSize] = useState({
+  const [canvasSize, setCanvasSize] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
-  });
-  const [strokes, setStrokes] = useState<{ x: number; y: number }[][]>([]);
+  }));
+  const [strokes, setStrokes] = useState<Point[][]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const handleDrawingPoint = useCallback((point: { x: number; y: number }) => {
+  const handleDrawingPoint = useCallback((point: Point) => {
     drawingCanvasRef.current?.addPoint(point);
   }, []);
 
   const handleDrawingEnd = useCallback(() => {
-    drawingCanvasRef.current?.endStroke();
-    const newStrokes = drawingCanvasRef.current?.getStrokes() || [];
-    if (newStrokes.length > 0) {
-      setStrokes((prevStrokes) => [...prevStrokes, ...newStrokes]);
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
+
+    canvas.endStroke();
+    const currentStrokes = canvas.getStrokes();
+
+    // Only add the last stroke (the one just completed)
+    if (currentStrokes.length > 0) {
+      const lastStroke = currentStrokes[currentStrokes.length - 1];
+      if (lastStroke && lastStroke.length > 1) {
+        setStrokes((prev) => [...prev, lastStroke]);
+      }
     }
-    drawingCanvasRef.current?.clear();
+    canvas.clear();
   }, []);
 
   const { isTracking, isDrawing, startTracking, stopTracking } =
-    useHandTracking(
-      videoRef as unknown as React.RefObject<HTMLVideoElement>,
-      canvasRef as unknown as React.RefObject<HTMLCanvasElement>,
-      handleDrawingPoint,
-      handleDrawingEnd
-    );
+    useHandTracking(videoRef, canvasRef, handleDrawingPoint, handleDrawingEnd);
 
   // Update canvas size to match container size
   useEffect(() => {
-    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    const container = containerRef.current;
+    if (!container) return;
+
+    let rafId: number | null = null;
 
     const updateSize = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const width = rect.width;
-        const height = rect.height;
+      rafId = null;
+      const { width, height } = container.getBoundingClientRect();
 
-        setCanvasSize((prev) => {
-          const widthDiff = Math.abs(prev.width - width);
-          const heightDiff = Math.abs(prev.height - height);
-          if (widthDiff > 5 || heightDiff > 5) {
-            return { width, height };
-          }
-          return prev;
-        });
-      }
+      setCanvasSize((prev) => {
+        // Only update if change is significant (avoids sub-pixel jitter)
+        if (
+          Math.abs(prev.width - width) > 1 ||
+          Math.abs(prev.height - height) > 1
+        ) {
+          return { width: Math.round(width), height: Math.round(height) };
+        }
+        return prev;
+      });
     };
 
-    const debouncedResize = () => {
-      if (resizeTimeout) clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(updateSize, 100);
+    const handleResize = () => {
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateSize);
+      }
     };
 
     // Initial size
     updateSize();
 
-    // Use ResizeObserver for more accurate container size tracking
-    const resizeObserver = new ResizeObserver(debouncedResize);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
-    window.addEventListener("resize", debouncedResize);
     return () => {
-      if (resizeTimeout) clearTimeout(resizeTimeout);
-      window.removeEventListener("resize", debouncedResize);
+      if (rafId !== null) cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
     };
   }, []);
