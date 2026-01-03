@@ -1,73 +1,146 @@
-# React + TypeScript + Vite
+# 🎨 Air Canvas
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Draw in thin air using just your hand! Air Canvas is a gesture-based drawing application that tracks your hand movements via webcam and transforms them into beautiful 3D clay-like strokes.
 
-Currently, two official plugins are available:
+![React](https://img.shields.io/badge/React-19-61dafb?logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6?logo=typescript)
+![Three.js](https://img.shields.io/badge/Three.js-0.182-black?logo=threedotjs)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-Hands-4285f4?logo=google)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## ✨ Features
 
-## React Compiler
+- **🖐️ Hand Gesture Drawing** — Point with your index finger to draw; lower other fingers to activate drawing mode
+- **🎯 Real-time Hand Tracking** — Full hand skeleton visualization with 21 landmark points using MediaPipe
+- **🪵 3D Clay Tubes** — Strokes are rendered as smooth, floating 3D tubes with a clay-like aesthetic
+- **🌊 Smooth Curves** — Chaikin's algorithm and Bezier curves create buttery-smooth strokes
+- **🔄 Interactive 3D View** — Orbit, zoom, and pan around your 3D creation
+- **✨ Gentle Animations** — Subtle floating and rotation animations bring your art to life
+- **🎨 Pleasing Color Palette** — Each stroke gets a unique color from a curated palette
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🚀 Getting Started
 
-## Expanding the ESLint configuration
+### Prerequisites
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Node.js 18+ 
+- A webcam
+- Modern browser with WebGL support
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### Installation
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+```bash
+# Clone or navigate to the project
+cd air-canvas
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Install dependencies
+pnpm install   # or npm install
+
+# Start development server
+pnpm dev       # or npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open [http://localhost:5173](http://localhost:5173) and allow camera access when prompted.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 🎮 How to Use
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+1. **Show your hand** to the camera — you'll see a blue skeleton overlay when detected
+2. **To draw**: Extend only your **index finger** while keeping other fingers closed
+3. **To stop drawing**: Extend more fingers or close your hand
+4. **Navigate 3D**: Click and drag to orbit, scroll to zoom
+5. **Clear canvas**: Click the trash button in the bottom toolbar
+
+### Drawing Gesture
+
 ```
+Drawing Mode:      ☝️ Index up, others down
+Not Drawing:       ✋ Multiple fingers up or ✊ fist
+```
+
+## 🏗️ Architecture
+
+```
+air-canvas/
+├── src/
+│   ├── App.tsx                 # Main app with UI layout
+│   └── ...
+├── components/
+│   ├── drawing-canvas.tsx      # 2D canvas for stroke preview
+│   └── three-scene.tsx         # 3D scene with clay tubes
+└── hooks/
+    └── usehandtracking.ts      # MediaPipe hand tracking logic
+```
+
+### Key Components
+
+| Component | Description |
+|-----------|-------------|
+| `useHandTracking` | Custom hook that handles MediaPipe integration, gesture detection, and coordinate smoothing |
+| `DrawingCanvas` | 2D canvas for real-time stroke preview with quadratic Bezier curves |
+| `ThreeScene` | React Three Fiber scene that renders strokes as 3D tubes with orbit controls |
+| `ClayTube` | Individual 3D tube mesh with floating animation |
+
+## 🛠️ Tech Stack
+
+- **Framework**: [React 19](https://react.dev) + [TypeScript](https://www.typescriptlang.org/)
+- **Build Tool**: [Vite 7](https://vitejs.dev/)
+- **Hand Tracking**: [MediaPipe Hands](https://developers.google.com/mediapipe/solutions/vision/hand_landmarker)
+- **3D Rendering**: [React Three Fiber](https://docs.pmnd.rs/react-three-fiber) + [Three.js](https://threejs.org/)
+- **Styling**: [Tailwind CSS 4](https://tailwindcss.com/)
+- **Icons**: [Lucide React](https://lucide.dev/)
+
+## ⚡ Performance Optimizations
+
+- **Lightweight smoothing** with exponential moving average for responsive yet stable tracking
+- **Downsampling** of stroke points before 3D conversion
+- **Cached canvas contexts** with `desynchronized` flag for lower latency
+- **Memoized components** to prevent unnecessary re-renders
+- **Optimized MediaPipe settings**: lite model, lower resolution for faster processing
+
+## 📜 Scripts
+
+```bash
+pnpm dev        # Start development server
+pnpm build      # Build for production
+pnpm preview    # Preview production build
+pnpm lint       # Run ESLint
+```
+
+## 🎨 Customization
+
+### Tube Appearance
+
+Modify `ClayTube` in `components/three-scene.tsx`:
+
+```tsx
+// Change color palette
+const hues = [186, 210, 280, 330, 45, 150];
+
+// Adjust tube thickness
+const radius = 0.12;
+
+// Modify material properties
+<meshStandardMaterial
+  metalness={0.05}
+  roughness={0.85}
+/>
+```
+
+### Hand Tracking Sensitivity
+
+Adjust in `hooks/usehandtracking.ts`:
+
+```tsx
+hands.setOptions({
+  minDetectionConfidence: 0.4,  // Lower = faster, less accurate
+  minTrackingConfidence: 0.4,
+});
+```
+
+## 📄 License
+
+MIT
+
+---
+
+<p align="center">
+  Made with 🖐️ and ❤️
+</p>
