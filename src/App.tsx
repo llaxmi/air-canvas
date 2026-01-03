@@ -1,10 +1,10 @@
 import { Trash2Icon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useHandTracking } from "../hooks/usehandtracking";
 import DrawingCanvas, {
   type DrawingCanvasHandle,
-} from "../components/drawing-canvas";
-import ThreeScene from "../components/three-scene";
-import { useHandTracking } from "../hooks/usehandtracking";
+} from "./components/drawing-canvas";
+import ThreeScene from "./components/three-scene";
 
 function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
